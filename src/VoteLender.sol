@@ -1,21 +1,6 @@
-// SPDX-License-Identifier: WTFPL
-pragma solidity ^0.8.21;
+// SPDX-License-Identifier: BUSL-3.0
+pragma solidity ^0.8.20;
 
-/**
-         DO WHAT THE FUCK YOU WANT TO PRIVATE LICENSE 
-                Version 2, December 2004 
-
- Copyright (C) 2004 Sam Hocevar <sam(at)hocevar.net> 
-
- Everyone is permitted to copy and distribute verbatim or modified 
- copies of this license document, and changing it is allowed as long 
- as the name is changed. 
-
-            DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE 
-   TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION 
-
-  0. You just DO WHAT THE FUCK YOU WANT TO.
- */
 import {IVotingEscrow as IVE} from "./interfaces/veRAM.sol";
 import {INFPManager} from "./interfaces/NFPManager.sol";
 import {IVoter} from "./interfaces/Voter.sol";
@@ -78,8 +63,12 @@ contract Lender is UUPSUpgradeable, Ownable {
     event DepositedNFT(uint256 indexed tokenId, uint256 price);
     bytes32 private depositSelector = bytes32(keccak256("DepositedNFT(uint256,uint256)"));
 
+    event DepositedNFP(uint256 indexed tokenId, uint256 indexed veNFT);
+    event WithdrawNFT(uint256 indexed tokenId);
+    event WithdrawNFP(uint256 indexed tokenId);
 
-    function initialize() initializer {
+
+    function initialize() external initializer {
         __Ownable_init();
     }
 
@@ -93,12 +82,12 @@ contract Lender is UUPSUpgradeable, Ownable {
         uint256 price
     ) external {
         // Transfer us the veNFT
-        IVE(veNFT).safeTransferFrom(msg.sender, address(this), tokenId);
+        IVE(veNFT).transferFrom(msg.sender, address(this), tokenId);
         // If for some reason this failed, then we revert, with code 101
         require(IVE(veNFT).ownerOf(tokenId) == address(this), "101");
         // Store the data in the mapping
         // Build the veInfo
-        veInfo packed = veInfo(msg.sender, price, true, 0);
+        veInfo memory packed = veInfo(msg.sender, price, true, 0);
         assembly {
             // Store the tokenId in memory at slot 0
             mstore(0, tokenId)
@@ -126,9 +115,9 @@ contract Lender is UUPSUpgradeable, Ownable {
         uint256 nfpId,
         uint256 tokenId
     ) external {
-        // We use this more than 2 times in this function so we store it in memory
+        // We use this more than 2 times in this function so we store it
         // for readability 
-        INFPManager memory manager = INFPManager(NFP);
+        INFPManager manager = INFPManager(NFP);
         // Transfer the NFP into the contract
         manager.safeTransferFrom(msg.sender, address(this), nfpId);
         // If for some reason the transfer failed, revert
@@ -136,7 +125,9 @@ contract Lender is UUPSUpgradeable, Ownable {
         // Store this deposit
         nfpInfo[nfpId] = nfpDepositInfo(msg.sender, tokenId, block.timestamp); 
         // It's in our custody now, so we boost it, and that's it for now
-        manager.switchAttatchment(nfpId, tokenId);
+        manager.switchAttachment(nfpId, tokenId);
+        // Emit the event
+        emit DepositedNFP(nfpId, tokenId);
     }
 
     /**
@@ -149,12 +140,17 @@ contract Lender is UUPSUpgradeable, Ownable {
         uint256 nfpId
     ) public payable {
         // Get the attatched veNFT
-        (address owner, uint256 tokenId, uint256 lastUpdate) = nfpInfo(nfpId);
+        address owner = nfpInfo[nfpId].owner;
+        uint256 tokenId = nfpInfo[nfpId].veNFT;
+        uint256 lastUpdate = nfpInfo[nfpId].lastUpdate;
         // Get the owner of that veNFT
-        (address veOwner, uint256 price, bool active, uint256 withdrawTime) = info(tokenId);
+        address veOwner = info[tokenId].owner;
+        uint256 price = info[tokenId].price;
+        bool active = info[tokenId].active;
+        uint256 withdrawTime = info[tokenId].deactivationTime;
         // Calculate the hours that have passed since the last update
         uint256 timePassed = (active ? block.timestamp : withdrawTime) - lastUpdate;
-        uint256 hoursPassed = (timePassed - (timePassed % 3600)) / 3600
+        uint256 hoursPassed = (timePassed - (timePassed % 3600)) / 3600;
         // Pay the lender of the veNFT if they haven't withdrawn it
         _payDepositor(veOwner, price, hoursPassed);
         // We use this more than 2 times
@@ -162,14 +158,17 @@ contract Lender is UUPSUpgradeable, Ownable {
         // Store the amount of RAM in the contract before claiming
         uint256 ramBeforeClaim = ram.balanceOf(address(this));
         // Claim all the RAM rewards into the contract
-        IVoter(voter).claimClGaugeRewards([gauge], [[RAM]], [[nfpId]]);
+        address[] memory gauges = new address[](1); gauges[0] = gauge;
+        address[][] memory tokens = new address[][](1); address[] memory _ram = new address[](1); _ram[0] = RAM; tokens[0] = _ram;
+        uint[][] memory nfps = new uint[][](1); uint[] memory _nfp = new uint[](1); _nfp[0] = nfpId; nfps[0] = _nfp;
+        IVoter(voter).claimClGaugeRewards(gauges, tokens, nfps);
         // Get how much ram we have now
         uint256 ramAfterClaim = ram.balanceOf(address(this));
         // Define a variable for the fees we take
         uint256 finalFee;
         assembly {
             // Calculate the fee we take (10%)
-            fee := div(sub(ramBeforeClaim, ramAfterClaim), 10)
+            let fee := div(sub(ramBeforeClaim, ramAfterClaim), 10)
             // Calculate the split between lender and protocol
             finalFee := div(fee, 2)
         }
@@ -193,7 +192,7 @@ contract Lender is UUPSUpgradeable, Ownable {
         uint256 nfpId
     ) external payable {
         // Get the NFP data
-        (address owner,,) = nfpInfo[nfpId];
+        address owner = nfpInfo[nfpId].owner;
         // Claim the rewards, which also handles payments
         claimRewards(gauge, nfpId);
         // Make sure the owner is also the sender
@@ -202,6 +201,8 @@ contract Lender is UUPSUpgradeable, Ownable {
         INFPManager(NFP).switchAttachment(nfpId, 0);
         // Send it back to the owner
         INFPManager(NFP).safeTransferFrom(address(this), owner, nfpId);
+        // Emit the event
+        emit WithdrawNFP(nfpId);
     }
 
     /**
@@ -212,13 +213,15 @@ contract Lender is UUPSUpgradeable, Ownable {
         uint256 tokenId
     ) external {
         // Get the veNFT info
-        (address veOwner,,) = info(tokenId);
+        address veOwner = info[tokenId].owner;
         // Only allow the owner of the veNFT to do this
         require(veOwner == msg.sender, "403");
         // Deactivate the veNFT and save when it was withdrawn
-        info[tokenId].active = false; info[tokenID].deactivationTime = block.timestamp;
+        info[tokenId].active = false; info[tokenId].deactivationTime = block.timestamp;
         // Transfer the veNFT to the owner
         IVE(veNFT).transferFrom(address(this), veOwner, tokenId);
+        // Emit the event
+        emit WithdrawNFT(tokenId);
     }
 
     function voteWithNFT(
@@ -227,7 +230,7 @@ contract Lender is UUPSUpgradeable, Ownable {
         uint256[] calldata _weights
     ) external {
         // Get the veNFT info
-        (address veOwner,,) = info(tokenId);
+        address veOwner = info[tokenId].owner;
         // Only allow the owner of the veNFT to do this
         require(veOwner == msg.sender, "403");
         // Vote
@@ -241,7 +244,7 @@ contract Lender is UUPSUpgradeable, Ownable {
         address[] calldata _bribes
     ) external {
         // Get the veNFT info
-        (address veOwner,,) = info(tokenId);
+        address veOwner = info[tokenId].owner;
         // Claim bribes and fees for the veNFT
         IVoter(voter).claimBribes(_bribes, _tokens, tokenId);
         IVoter(voter).claimFees(_fees, _tokens, tokenId);
@@ -285,8 +288,10 @@ contract Lender is UUPSUpgradeable, Ownable {
         require(r, "202");
     }
 
-    fallback () {
+    fallback() external {
         // Require is cheaper on Arbitrum 
         require(false, "404");
     }
+
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 }
