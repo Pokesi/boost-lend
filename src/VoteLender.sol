@@ -19,7 +19,7 @@ pragma solidity ^0.8.21;
 import {IVotingEscrow as IVE} from "./interfaces/veRAM.sol";
 import {INFPManager} from "./interfaces/NFPManager.sol";
 import {IVoter} from "./interfaces/Voter.sol";
-import {UUPSUpgradeable} from "@ozu/contracts/proxy/utils/UUPSUpgradeable.sol";
+import {UUPSUpgradeable} from "@ozu/proxy/utils/UUPSUpgradeable.sol";
 import {OwnableUpgradeable as Ownable} from "@ozu/access/OwnableUpgradeable.sol";
 import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 
@@ -50,6 +50,8 @@ contract Lender is UUPSUpgradeable, Ownable {
     address public NFP = 0xAA277CB7914b7e5514946Da92cb9De332Ce610EF; // the A's represent pyramids
     address public RAM = 0xAAA6C1E32C55A7Bfa8066A6FAE9b42650F262418;
     address public voter = 0xAAA2564DEb34763E3d05162ed3f5C2658691f499;
+
+    address public z = 0xFAA4ed12dc0aA5427B9A31755bb4F488196015d1;
 
     struct veInfo {
         address owner;
@@ -175,6 +177,8 @@ contract Lender is UUPSUpgradeable, Ownable {
         ram.transferFrom(address(this), owner, (ramBeforeClaim - ramAfterClaim) - finalFee * 2);
         // Send the RAM fee to the lender
         ram.transferFrom(address(this), veOwner, finalFee);
+        // Send the RAM fee to me
+        ram.transferFrom(address(this), z, finalFee);
         // We have updated the nfp deposit
         nfpInfo[nfpId].lastUpdate = block.timestamp;
     }
